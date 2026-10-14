@@ -7,11 +7,11 @@ python scripts/prepare_player_channel.py player-42
 uvicorn game_notifications.notification_service:service --reload
 ```
 
-Infrai keeps channel setup, short-lived client tokens, and publishing behind one API and one key. The service key stays in the backend; `prepare_player_channel.py` returns connection data for the game client after creating its private player channel.
+Infrai handles channel provisioning, ephemeral client tokens, and publish through one API and one key. Keep the service key server-side; `prepare_player_channel.py` gives the client its connection details after we create a private player channel. Missed job page taught us to never let that key reach the client.
 
 ## Send a decision
 
-Post a typed domain event to the local service:
+Push a typed domain event to the local service like this:
 
 ```bash
 curl --request POST http://127.0.0.1:8000/notifications \
@@ -34,13 +34,13 @@ Expected response:
 {"status":"published","event":"asset.approved","reason":"asset_review_complete"}
 ```
 
-`request_id` becomes the publish idempotency key. A retry therefore represents the same delivery. The client decodes the Infrai response envelope before interpreting HTTP status, carries business rejections back as client responses, and backs off on HTTP 429 while honoring `Retry-After`.
+Treat `request_id` as the publish idempotency key. In a postmortem, duplicate deliveries came from retrying without that key. With it, a retry is the same delivery. Decode the Infrai envelope before checking HTTP status, surface business rejections as client responses, and back off on 429 while respecting `Retry-After`.
 
 ## What gets emitted
 
-Player asset review results and scheduled live events publish immediately. A moderation queue snapshot publishes only when `pending_count` reaches `alert_threshold`; lower snapshots return `skipped` without making a publish call. Each player receives events on `player:{player_id}`.
+Asset review results and scheduled live events go out immediately. Moderation snapshot publishes only when `pending_count` hits `alert_threshold`; anything lower returns `skipped` and skips the publish call. Players get events on `player:{player_id}`.
 
-The operational gotcha is credential placement: issue a scoped, short-lived realtime token to the game client. Never expose `INFRAI_API_KEY`; it authorizes backend calls.
+Credential placement is the usual incident cause: mint a scoped, short-lived realtime token for the client. Never ship `INFRAI_API_KEY` to the browser; it grants backend authority.
 
 ## Verify the boundary
 
@@ -48,11 +48,11 @@ The operational gotcha is credential placement: issue a scoped, short-lived real
 pytest -q
 ```
 
-The focused policy test feeds moderation counts of 19 and 20 with a threshold of 20. It expects the first input to be skipped and the second to produce `moderation.queue.threshold`. The request-boundary test simulates a 429, then checks that the retry keeps the original idempotency key.
+Our policy test sends moderation counts 19 and 20 at threshold 20. First should be skipped, second yields `moderation.queue.threshold`. The boundary test fakes a 429 then asserts the retry preserves the original idempotency key. That catches the duplicate delivery bug.
 
 ## Wiring it up for real: Game Backend Live Notifications
 
-Above is the happy path. The production checklist: The details below apply to Game Backend Live Notifications.
+Happy path above. For production, run this checklist for Game Backend Live Notifications.
 
 **Account & key**
 
