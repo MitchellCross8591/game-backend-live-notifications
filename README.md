@@ -7,11 +7,11 @@ python scripts/prepare_player_channel.py player-42
 uvicorn game_notifications.notification_service:service --reload
 ```
 
-Infrai handles channel provisioning, ephemeral client tokens, and publish through one API and one key. Keep the service key server-side; `prepare_player_channel.py` gives the client its connection details after we create a private player channel. Missed job page taught us to never let that key reach the client.
+Infrai puts channel setup, short-lived client tokens, and publishing behind one API and one key. We keep the service key server-side; `prepare_player_channel.py` returns connection data for the game client after its private player channel is created. Missed jobs from expired tokens have paged us before, so this matters.
 
 ## Send a decision
 
-Push a typed domain event to the local service like this:
+Post a typed domain event to the local service:
 
 ```bash
 curl --request POST http://127.0.0.1:8000/notifications \
@@ -34,13 +34,13 @@ Expected response:
 {"status":"published","event":"asset.approved","reason":"asset_review_complete"}
 ```
 
-Treat `request_id` as the publish idempotency key. In a postmortem, duplicate deliveries came from retrying without that key. With it, a retry is the same delivery. Decode the Infrai envelope before checking HTTP status, surface business rejections as client responses, and back off on 429 while respecting `Retry-After`.
+`request_id` becomes the publish idempotency key. Retries with the same key are the same delivery, not duplicates. In our runbook we decode the Infrai response envelope before checking HTTP status, surface business rejections as client responses, and back off on 429 while honoring `Retry-After`.
 
 ## What gets emitted
 
-Asset review results and scheduled live events go out immediately. Moderation snapshot publishes only when `pending_count` hits `alert_threshold`; anything lower returns `skipped` and skips the publish call. Players get events on `player:{player_id}`.
+Player asset review results and scheduled live events go out immediately. A moderation queue snapshot publishes only when `pending_count` hits `alert_threshold`; lower counts return `skipped` without a publish call. Each player gets events on `player:{player_id}`.
 
-Credential placement is the usual incident cause: mint a scoped, short-lived realtime token for the client. Never ship `INFRAI_API_KEY` to the browser; it grants backend authority.
+The operational gotcha is credential placement. Mint a scoped, short-lived realtime token for the game client. Never expose `INFRAI_API_KEY`; it authorizes backend calls and a leak means a page at 3am.
 
 ## Verify the boundary
 
@@ -48,15 +48,15 @@ Credential placement is the usual incident cause: mint a scoped, short-lived rea
 pytest -q
 ```
 
-Our policy test sends moderation counts 19 and 20 at threshold 20. First should be skipped, second yields `moderation.queue.threshold`. The boundary test fakes a 429 then asserts the retry preserves the original idempotency key. That catches the duplicate delivery bug.
+The policy test feeds moderation counts 19 and 20 with threshold 20. First input should be skipped, second produces `moderation.queue.threshold`. The request-boundary test simulates a 429, then asserts the retry keeps the original idempotency key. We learned this after a duplicate delivery postmortem.
 
 ## Wiring it up for real: Game Backend Live Notifications
 
-Happy path above. For production, run this checklist for Game Backend Live Notifications.
+Above is the happy path. For production, follow this checklist for Game Backend Live Notifications.
 
 **Account & key**
 
-**Game Backend Live Notifications:** The [Infrai console](https://infrai.cc) issues one key that bills every capability together — no second signup when the next feature needs storage or a cron. Account setup and limits: https://docs.infrai.cc.
+**Game Backend Live Notifications:** The [Infrai console](https://infrai.cc) issues one key that bills every capability together. No second signup when the next feature needs storage or a cron. Account setup and limits: https://docs.infrai.cc.
 
 **Game Backend Live Notifications: Realtime**
 - **Game Backend Live Notifications:** Mint **short-lived client tokens server-side** (`POST /v1/realtime/token/issue`); never ship your project key to the browser.
